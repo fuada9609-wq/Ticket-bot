@@ -1,0 +1,200 @@
+const { 
+    Client, 
+    GatewayIntentBits, 
+    ActionRowBuilder, 
+    ButtonBuilder, 
+    ButtonStyle, 
+    ChannelType, 
+    PermissionsBitField, 
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle, 
+    EmbedBuilder 
+} = require('discord.js');
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
+});
+
+// Ticket verilerini ve mesaj geçmişini hafızada tutmak için Map
+const ticketData = new Map();
+
+client.once('ready', () => {
+    console.log(`Bot aktif: ${client.user.tag}`);
+});
+
+// Kurulum Komutu: !ticket-kur
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+
+    if (message.content === '!ticket-kur') {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            return message.reply('Bu komutu kullanmak için Yönetici yetkisine sahip olmalısın.');
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle('🎫 Destek & Kanal Talebi')
+            .setDescription('Aşağıdaki **"Ticket Aç"** butonuna basarak talebinizi iletebilir ve kanal oluşturabilirsiniz.')
+            .setColor('Blue');
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('open_ticket')
+                .setLabel('Ticket Aç')
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji('📩')
+        );
+
+        await message.channel.send({ embeds: [embed], components: [row] });
+    }
+
+    // Açık olan ticket kanallarındaki mesajları kaydet
+    if (message.channel.name && message.channel.name.startsWith('ticket-')) {
+        if (ticketData.has(message.channel.id)) {
+            const data = ticketData.get(message.channel.id);
+            data.messages.push(`${message.author.tag}: ${message.content}`);
+        }
+    }
+});
+
+// Buton ve Modal Etkileşimleri
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.isButton()) {
+        // 1. TICKET AÇMA BUTONU
+        if (interaction.customId === 'open_ticket') {
+            const channelName = `ticket-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+            const ticketChannel = await interaction.guild.channels.create({
+                name: channelName,
+                type: ChannelType.GuildText,
+                permissionOverwrites: [
+                    {
+                        id: interaction.guild.id,
+                        deny: [PermissionsBitField.Flags.ViewChannel]
+                    },
+                    {
+                        id: interaction.user.id,
+                        allow: [
+                            PermissionsBitField.Flags.ViewChannel,
+                            PermissionsBitField.Flags.SendMessages,
+                            PermissionsBitField.Flags.ReadMessageHistory
+                        ]
+                    },
+                    {
+                        id: client.user.id,
+                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
+                    }
+                ]
+            });
+
+            ticketData.set(ticketChannel.id, {
+                userId: interaction.user.id,
+                targetChannelName: null,
+                messages: []
+            });
+
+            const welcomeEmbed = new EmbedBuilder()
+                .setTitle(`Hoş Geldin, ${interaction.user.username}!`)
+                .setDescription('Lütfen öncelikle aşağıdaki **"Kanal İsmi Belirle"** butonuna basarak açmak istediğin kanalın adını gir. Ardından mesajlarını yazabilirsin. İşin bittiğinde **"Bitir"** butonuna bas.')
+                .setColor('Green');
+
+            const actionRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('set_channel_name')
+                    .setLabel('Kanal İsmi Belirle')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('✏️'),
+                new ButtonBuilder()
+                    .setCustomId('finish_ticket')
+                    .setLabel('Bitir')
+                    .setStyle(ButtonStyle.Success)
+                    .setEmoji('✅')
+            );
+
+            await ticketChannel.send({
+                content: `<@${interaction.user.id}>`,
+                embeds: [welcomeEmbed],
+                components: [actionRow]
+            });
+
+            await interaction.reply({ content: `Ticket kanalınız oluşturuldu: ${ticketChannel}`, ephemeral: true });
+        }
+
+        // 2. KANAL İSMİ BELİRLEME BUTONU
+        if (interaction.customId === 'set_channel_name') {
+            const modal = new ModalBuilder()
+                .setCustomId('channel_name_modal')
+                .setTitle('Kanal İsmi Girin');
+
+            const channelInput = new TextInputBuilder()
+                .setCustomId('channel_name_input')
+                .setLabel('Oluşturulacak Kanalın Adı')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Örn: sohbet-odasi')
+                .setRequired(true);
+
+            const modalRow = new ActionRowBuilder().addComponents(channelInput);
+            modal.addComponents(modalRow);
+
+            await interaction.showModal(modal);
+        }
+
+        // 3. BİTİR BUTONU
+        if (interaction.customId === 'finish_ticket') {
+            const data = ticketData.get(interaction.channel.id);
+
+            if (!data || !data.targetChannelName) {
+                return interaction.reply({
+                    content: '⚠️ Lütfen önce **"Kanal İsmi Belirle"** butonuna basıp bir kanal adı girin!',
+                    ephemeral: true
+                });
+            }
+
+            await interaction.reply('✅ İşlem tamamlanıyor, istenen kanal oluşturulup mesajlar aktarılıyor...');
+
+            const targetChannel = await interaction.guild.channels.create({
+                name: data.targetChannelName,
+                type: ChannelType.GuildText
+            });
+
+            const logEmbed = new EmbedBuilder()
+                .setTitle(`📌 Ticket Özeti - ${interaction.user.tag}`)
+                .setDescription(data.messages.length > 0 ? data.messages.join('\n') : 'Hiç mesaj yazılmadı.')
+                .setColor('Purple')
+                .setTimestamp();
+
+            await targetChannel.send({ embeds: [logEmbed] });
+
+            ticketData.delete(interaction.channel.id);
+            
+            setTimeout(async () => {
+                await interaction.channel.delete().catch(() => {});
+            }, 3000);
+        }
+    }
+
+    // MODAL FORMU
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'channel_name_modal') {
+            const inputName = interaction.fields.getTextInputValue('channel_name_input');
+            const data = ticketData.get(interaction.channel.id);
+
+            if (data) {
+                data.targetChannelName = inputName;
+                ticketData.set(interaction.channel.id, data);
+            }
+
+            await interaction.reply({
+                content: `👍 Hedef kanal ismi **"${inputName}"** olarak ayarlandı. Mesajlarınızı yazabilirsiniz. İşiniz bitince **"Bitir"** butonuna basın.`,
+                ephemeral: true
+            });
+        }
+    }
+});
+
+// BURAYA DİKKAT: 'BOT_TOKENINI_BURAYA_YAZ' kısmını silip kendi tokenini tırnakların içine koy
+client.login('MTU1NDU4MzY0MzU5MzExMzcyMg.G-ZTKG.YXrKSKAeYmwyV5Eq45fezI9CziJa8vD5JDHrno');
